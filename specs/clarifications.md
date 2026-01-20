@@ -57,16 +57,21 @@ This document captures clarifications made during the specification review proce
 
 ---
 
-### 4. Score Entry Scope ⏳
+### 4. Score Entry Scope ✅
 
 **Issue**: Can captains enter scores for anyone who played with their team, or only permanent members?
 
-**Resolution**: **PENDING - Requires stakeholder input**
-- User will discuss with golf association members
-- For now, implement for **permanent team members only** (from TEAM_MEMBERS table)
-- Design the system to be extensible for "guest players" in the future
+**Resolution**: **Support both permanent team members AND guest players**
+- Team captains can enter scores for all permanent team members (from TEAM_MEMBERS table)
+- Team captains can also add "guest players" for an event
+- Guest players are temporary participants who are not permanent team members
+- Guest player scores are recorded with the team for that specific event only
 
-**Temporary Implementation**: Score entry form shows only members from TEAM_MEMBERS for the selected team.
+**Implementation**:
+- Add a GUEST_SCORES table to track guest player scores per event
+- Score entry form shows permanent team members plus an "Add Guest" option
+- Guest players require: first name, last name, and score
+- Guest players do NOT require email or full member registration
 
 ---
 
@@ -84,17 +89,31 @@ This document captures clarifications made during the specification review proce
 
 ---
 
-### 6. Tee Time Request Constraints ⏳
+### 6. Tee Time Request Constraints ✅
 
 **Issue**: No validation rules specified for tee time requests.
 
-**Resolution**: **PENDING - Needs further specification**
-- Tee times in 10-minute intervals (confirmed)
-- Earliest/latest times: TBD (likely course-dependent)
-- Multiple teams can request same preferred time (admin resolves conflicts)
-- Teams without tee time requests: Admin can assign or leave unassigned
+**Resolution**: **Event-based tee time configuration with system defaults**
 
-**Recommendation**: Add optional `tee_time_start` and `tee_time_end` fields to EVENTS table.
+**System Settings (SYSTEM_SETTINGS table)**:
+- `default_tee_time_increment`: Default gap between team tee times in minutes (default: **8 minutes**)
+- `default_tee_time_slots`: Maximum number of tee time slots per event (default: **100**)
+
+**Event Configuration (EVENTS table)**:
+- `tee_time_start`: Starting time for the first tee time of the event (TIME, required for tee time assignment)
+- Subsequent tee times are calculated by adding the increment to the previous slot
+
+**Tee Time Assignment Logic**:
+1. First team gets `tee_time_start` (e.g., 8:00 AM)
+2. Second team gets `tee_time_start + increment` (e.g., 8:08 AM with 8-minute increment)
+3. Continue until all teams are assigned or max slots reached
+4. Multiple teams can request same preferred time (admin resolves conflicts)
+5. Teams without tee time requests: Admin can assign or leave unassigned
+
+**Database Changes Required**:
+- Add to EVENTS: `tee_time_start TIME NULL`
+- Add to SYSTEM_SETTINGS: `default_tee_time_increment` = '8'
+- Add to SYSTEM_SETTINGS: `default_tee_time_slots` = '100'
 
 ---
 
@@ -140,18 +159,31 @@ This document captures clarifications made during the specification review proce
 
 ---
 
-### 10. Photo Storage Limits ✅
+### 10. Photo Storage ✅
 
-**Issue**: No limits specified for course photos.
+**Issue**: No limits specified for course photos and unclear if upload or URL entry.
 
-**Resolution**: **Maximum 3 photos per course**
-- Photos stored as static links to a directory (not uploaded to database)
+**Resolution**: **URL-based photo references with maximum 3 photos per course**
+- Photos are specified via URL entry (not file upload)
+- URLs can point to:
+  - Local paths on the hosting server (e.g., `/images/courses/pine-valley-1.jpg`)
+  - External websites (e.g., `https://example.com/golf-course.jpg`)
 - Maximum 3 photos per course
-- Photo URL format: `/storage/courses/{course_id}/photo_{1-3}.{ext}`
-- Allowed formats: JPG, PNG, WebP
-- No file size limit enforced at application level (handled by server config)
+- Allowed formats: JPG, PNG, WebP (validated by file extension in URL)
+- No file size limit enforced (external URLs are not validated for size)
 
-**Implementation Note**: Photos are managed as URLs pointing to a file storage location, not binary uploads.
+**Implementation Note**: Administrators enter URLs directly in the course form. The system does NOT handle file uploads for photos in Phase 1.
+
+---
+
+### 11. Report Sorting ✅
+
+**Issue**: Default sort order for Event Scoring Report not specified.
+
+**Resolution**: **Sort by team name alphabetically (A-Z) as default**
+- Event Scoring Report default sort: Team name (A-Z), then member name (A-Z) within team
+- Optional sort toggles available: by score (ascending), by member name
+- Teams and Members Report: Sort by team name (A-Z)
 
 ---
 
@@ -173,13 +205,33 @@ Based on these clarifications, the following schema changes are needed:
 ### EVENTS Table
 ```sql
 -- Add: registration_deadline DATE NULL
--- Optional: tee_time_start TIME NULL
--- Optional: tee_time_end TIME NULL
+-- Add: tee_time_start TIME NULL (starting time for first tee time)
 ```
 
 ### TEAM_MEMBERS Table
 ```sql
 -- Add constraint: Only one is_primary_team = true per member_id
+```
+
+### GUEST_SCORES Table (NEW)
+```sql
+CREATE TABLE GUEST_SCORES (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    event_id INT NOT NULL REFERENCES EVENTS(id),
+    team_id INT NOT NULL REFERENCES TEAMS(id),
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    total_score INT NOT NULL,
+    entered_by INT NOT NULL REFERENCES MEMBERS(id),
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL
+);
+```
+
+### SYSTEM_SETTINGS Table (Additional Entries)
+```sql
+-- Add setting: default_tee_time_increment = '8' (minutes)
+-- Add setting: default_tee_time_slots = '100'
 ```
 
 ---
@@ -188,8 +240,10 @@ Based on these clarifications, the following schema changes are needed:
 
 | Item | Status | Owner | Notes |
 |------|--------|-------|-------|
-| Score entry scope (permanent vs event-based) | Pending | User | Awaiting stakeholder discussion |
-| Tee time earliest/latest constraints | Pending | User | May be course-dependent |
+| ~~Score entry scope~~ | ✅ Resolved | - | Guest players supported |
+| ~~Tee time constraints~~ | ✅ Resolved | - | Event start time + system default increment |
+
+**All open items have been resolved.**
 
 ---
 
@@ -198,3 +252,4 @@ Based on these clarifications, the following schema changes are needed:
 | Date | Author | Changes |
 |------|--------|---------|
 | 2026-01-18 | Architecture Review | Initial clarifications document |
+| 2026-01-19 | Architecture Review | Resolved: Score entry scope (guest players), Tee time constraints (8-min default increment, event start time), Report sorting (team name A-Z), Photo storage (URL-based) |

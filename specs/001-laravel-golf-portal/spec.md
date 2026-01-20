@@ -98,7 +98,7 @@ As an administrator, I want to create and manage golf courses so that events can
 
 1. **Given** an administrator, **When** they navigate to Admin > Courses, **Then** they see a list of all courses
 2. **Given** an administrator on the courses page, **When** they click "Add Course" and fill in required fields, **Then** a new course is created
-3. **Given** an administrator viewing a course, **When** they upload photos, **Then** the photos are saved and displayed in order
+3. **Given** an administrator viewing a course, **When** they enter photo URLs, **Then** the photos are saved and displayed in order
 4. **Given** an administrator, **When** they edit a course's details, **Then** the changes are saved
 5. **Given** an administrator, **When** they delete a course not associated with events, **Then** the course is removed
 
@@ -200,7 +200,7 @@ As an administrator, I want to assign tee times to teams so that the event sched
 **Acceptance Scenarios**:
 
 1. **Given** an administrator, **When** they view pending tee time requests, **Then** they see all requests with team and preferred time
-2. **Given** an administrator viewing a request, **When** they assign a time in 10-minute intervals, **Then** the request status changes to "assigned"
+2. **Given** an administrator viewing a request, **When** they assign a time in 8-minute intervals, **Then** the request status changes to "assigned"
 3. **Given** assigned tee times for an event, **When** the admin views the event schedule, **Then** they see a timeline of all assignments
 4. **Given** an assigned tee time, **When** team members log in, **Then** they see their assigned time on the dashboard
 
@@ -364,7 +364,7 @@ As an administrator, I want to view a report of all teams and their members so t
 - **FR-007**: System MUST allow team captains to manage their team roster
 - **FR-008**: System MUST allow team captains to register teams for events
 - **FR-009**: System MUST allow team captains to request tee times
-- **FR-010**: System MUST allow administrators to assign tee times in 10-minute intervals
+- **FR-010**: System MUST allow administrators to assign tee times in 8-minute intervals (configurable via system settings)
 - **FR-011**: System MUST display assigned tee times to team members
 - **FR-012**: System MUST allow team captains to enter scores for team members
 - **FR-013**: System MUST allow members to view their personal score history
@@ -421,7 +421,7 @@ As an administrator, I want to view a report of all teams and their members so t
 
 ### Database Migrations
 
-All 12 tables from specs.md Section 3 will be created as Laravel migrations with:
+All 13 tables from specs.md Section 3 will be created as Laravel migrations with:
 - Eloquent models with relationships
 - Form requests for validation
 - Policies for authorization

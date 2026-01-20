@@ -100,7 +100,7 @@ As an administrator, I want to create and manage golf courses so that events can
 
 1. **Given** an administrator, **When** they navigate to Admin > Courses, **Then** they see a list of all courses
 2. **Given** an administrator on the courses page, **When** they click "Add Course" and fill in required fields, **Then** a new course is created
-3. **Given** an administrator viewing a course, **When** they upload photos, **Then** the photos are saved and displayed in order
+3. **Given** an administrator viewing a course, **When** they enter photo URLs, **Then** the photos are saved and displayed in order
 4. **Given** an administrator, **When** they edit a course's details, **Then** the changes are saved
 5. **Given** an administrator, **When** they delete a course not associated with events, **Then** the course is removed
 
@@ -202,7 +202,7 @@ As an administrator, I want to assign tee times to teams so that the event sched
 **Acceptance Scenarios**:
 
 1. **Given** an administrator, **When** they view pending tee time requests, **Then** they see all requests with team and preferred time
-2. **Given** an administrator viewing a request, **When** they assign a time in 10-minute intervals, **Then** the request status changes to "assigned"
+2. **Given** an administrator viewing a request, **When** they assign a time in 8-minute intervals, **Then** the request status changes to "assigned"
 3. **Given** assigned tee times for an event, **When** the admin views the event schedule, **Then** they see a timeline of all assignments
 4. **Given** an assigned tee time, **When** team members log in, **Then** they see their assigned time on the dashboard
 
@@ -366,7 +366,7 @@ As an administrator, I want to view a report of all teams and their members so t
 - **FR-007**: System MUST allow team captains to manage their team roster
 - **FR-008**: System MUST allow team captains to register teams for events
 - **FR-009**: System MUST allow team captains to request tee times
-- **FR-010**: System MUST allow administrators to assign tee times in 10-minute intervals
+- **FR-010**: System MUST allow administrators to assign tee times in 8-minute intervals (configurable via system settings)
 - **FR-011**: System MUST display assigned tee times to team members
 - **FR-012**: System MUST allow team captains to enter scores for team members
 - **FR-013**: System MUST allow members to view their personal score history
@@ -474,11 +474,11 @@ model Member {
   phone         String?
   passwordHash  String?   @map("password_hash")
   isAdmin       Boolean   @default(false) @map("is_admin")
-  primaryTeamId Int?      @map("primary_team_id")
+  isActive      Boolean   @default(true) @map("is_active")
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
 
-  primaryTeam   Team?     @relation("PrimaryTeam", fields: [primaryTeamId], references: [id])
+  // Primary team is determined via TeamMember.isPrimaryTeam flag
   teamMembers   TeamMember[]
   teamCaptains  TeamCaptain[]
   scores        Score[]
@@ -486,6 +486,7 @@ model Member {
   teeTimeRequests TeeTimeRequest[] @relation("RequestedBy")
   teeTimeAssignments TeeTimeRequest[] @relation("AssignedBy")
   scoresEntered Score[] @relation("EnteredBy")
+  guestScoresEntered GuestScore[] @relation("GuestScoresEntered")
 
   @@map("members")
 }
@@ -494,20 +495,53 @@ model Team {
   id          Int       @id @default(autoincrement())
   teamName    String    @map("team_name")
   description String?
+  isActive    Boolean   @default(true) @map("is_active")
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  primaryMembers Member[] @relation("PrimaryTeam")
   teamMembers    TeamMember[]
   teamCaptains   TeamCaptain[]
   eventRegistrations EventRegistration[]
   teeTimeRequests TeeTimeRequest[]
   scores         Score[]
+  guestScores    GuestScore[]
 
   @@map("teams")
 }
 
-// ... additional models for all 12 tables
+model TeamMember {
+  id            Int       @id @default(autoincrement())
+  teamId        Int       @map("team_id")
+  memberId      Int       @map("member_id")
+  isPrimaryTeam Boolean   @default(false) @map("is_primary_team")
+  joinedAt      DateTime  @default(now()) @map("joined_at")
+
+  team          Team      @relation(fields: [teamId], references: [id])
+  member        Member    @relation(fields: [memberId], references: [id])
+
+  @@unique([teamId, memberId])
+  @@map("team_members")
+}
+
+model GuestScore {
+  id          Int       @id @default(autoincrement())
+  eventId     Int       @map("event_id")
+  teamId      Int       @map("team_id")
+  firstName   String    @map("first_name")
+  lastName    String    @map("last_name")
+  totalScore  Int       @map("total_score")
+  enteredBy   Int       @map("entered_by")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  event       Event     @relation(fields: [eventId], references: [id])
+  team        Team      @relation(fields: [teamId], references: [id])
+  enteredByMember Member @relation("GuestScoresEntered", fields: [enteredBy], references: [id])
+
+  @@map("guest_scores")
+}
+
+// ... additional models for all 13 tables
 ```
 
 ### API Routes Structure
@@ -627,7 +661,8 @@ export const memberSchema = z.object({
   lastName: z.string().min(1),
   phone: z.string().optional(),
   isAdmin: z.boolean().default(false),
-  primaryTeamId: z.number().optional(),
+  isActive: z.boolean().default(true),
+  // Note: Primary team is managed via TeamMember.isPrimaryTeam, not on Member
 });
 
 export type MemberInput = z.infer<typeof memberSchema>;
