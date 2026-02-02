@@ -12,9 +12,9 @@
   Each user story/journey is INDEPENDENTLY TESTABLE.
   
   Priority Definitions:
-  - P1 (MVP Core): Member authentication, course/event management, event viewing, profile, team management, tee time requests
-  - P2: Captain score entry, full CRUD for administrators
-  - P3: Team score reports
+  - P1 (MVP Core): Member authentication, course/event management, event viewing, profile
+  - P2: Team management, event team registration, tee time requests
+  - P3: Captain score entry, full CRUD for administrators, team score reports
   
   NOTE: User stories are identical to Laravel spec - only implementation differs
 -->
@@ -100,7 +100,7 @@ As an administrator, I want to create and manage golf courses so that events can
 
 1. **Given** an administrator, **When** they navigate to Admin > Courses, **Then** they see a list of all courses
 2. **Given** an administrator on the courses page, **When** they click "Add Course" and fill in required fields, **Then** a new course is created
-3. **Given** an administrator viewing a course, **When** they enter photo URLs, **Then** the photos are saved and displayed in order
+3. **Given** an administrator viewing a course, **When** they enter up to 3 photo URLs, **Then** the photos are saved and displayed in order
 4. **Given** an administrator, **When** they edit a course's details, **Then** the changes are saved
 5. **Given** an administrator, **When** they delete a course not associated with events, **Then** the course is removed
 
@@ -347,11 +347,13 @@ As an administrator, I want to view a report of all teams and their members so t
 ### Edge Cases
 
 - What happens when a member belongs to multiple teams? → They can view all teams but have one primary team
-- What happens when a captain is removed from a team? → They lose captain privileges for that team only
+- What happens when a captain is removed from a team? → They lose captain privileges and are demoted to regular member
+- What happens when a member is promoted to captain of a second team? → Rejected; a member can only captain one team
+- What happens when multiple members are designated captains for the same team? → Allowed; teams can have multiple captains
 - What happens when an event is cancelled? → Status changes, event hidden from dashboard, tee times cancelled
 - What happens when a course is deleted that has events? → Deletion should be prevented or cascade handled
 - What happens with concurrent score entry? → Optimistic locking with conflict resolution
-- What happens if shared password is changed while members are logged in? → JWT tokens remain valid until expiry
+- What happens if shared password is changed while members are logged in? → JWT tokens remain valid until expiry; passwordHash updated for all regular members
 
 ## Requirements *(mandatory)*
 
@@ -360,17 +362,17 @@ As an administrator, I want to view a report of all teams and their members so t
 - **FR-001**: System MUST authenticate users via email and password (individual or shared)
 - **FR-002**: System MUST enforce role-based access control (Admin, Captain, Member)
 - **FR-003**: System MUST display upcoming events on member dashboard
-- **FR-004**: System MUST allow administrators to manage courses with photos
+- **FR-004**: System MUST allow administrators to manage courses with up to 3 photos
 - **FR-005**: System MUST allow administrators to manage events with status tracking
 - **FR-006**: System MUST allow administrators to manage teams and assign captains
 - **FR-007**: System MUST allow team captains to manage their team roster
 - **FR-008**: System MUST allow team captains to register teams for events
 - **FR-009**: System MUST allow team captains to request tee times
-- **FR-010**: System MUST allow administrators to assign tee times in 8-minute intervals (configurable via system settings)
+- **FR-010**: System MUST allow administrators to assign tee times based on the course's tee time interval (default 8 minutes)
 - **FR-011**: System MUST display assigned tee times to team members
 - **FR-012**: System MUST allow team captains to enter scores for team members
 - **FR-013**: System MUST allow members to view their personal score history
-- **FR-014**: System MUST allow administrators to set the shared member password
+- **FR-014**: System MUST allow administrators to update the shared password for all regular members
 - **FR-015**: System MUST log all authentication and data modification events
 - **FR-016**: System MUST generate event scoring reports
 - **FR-017**: System MUST generate teams and members reports
@@ -379,7 +381,7 @@ As an administrator, I want to view a report of all teams and their members so t
 
 - **Member**: Individual user with email, name, phone, role (admin/captain/member), team associations
 - **Team**: Group of members with name, description, captain designations
-- **Course**: Golf course with name, address, photos, Google Maps link, details
+- **Course**: Golf course with name, address, up to 3 photo URLs, Google Maps link, details
 - **Event**: Golf outing with name, date, course reference, status
 - **Score**: Member's score at an event, entered by captain or admin
 - **Tee Time Request**: Captain's request for preferred time, admin's assignment
@@ -421,19 +423,53 @@ export const authOptions: NextAuthOptions = {
       },
       async authorize(credentials) {
         // 1. Find member by email
-        // 2. Check if member has individual password
-        // 3. If yes, validate against individual password
-        // 4. If no, validate against shared password from system_settings
-        // 5. Return user with role information
+        const member = await prisma.member.findUnique({
+          where: { email: credentials.email },
+          include: { teamMembers: true, teamCaptains: true }
+        });
+
+        if (!member || !member.isActive) return null;
+
+        // 2. All members have a passwordHash field
+        //    - Regular members: passwordHash contains the shared password (updated by admin)
+        //    - Admins/Captains: passwordHash contains their individual password
+        const isValidPassword = await bcrypt.compare(credentials.password, member.passwordHash);
+
+        if (!isValidPassword) return null;
+
+        // 3. Return user with role information
+        //    Note: A member can be BOTH admin AND captain simultaneously
+        const roles: string[] = ['member'];  // Everyone is at least a member
+        if (member.isAdmin) roles.push('admin');
+        if (member.teamCaptains.length > 0) roles.push('captain');
+        
+        return {
+          id: member.id,
+          email: member.email,
+          name: `${member.firstName} ${member.lastName}`,
+          roles: roles,  // Array of roles: ['member'], ['member', 'admin'], ['member', 'captain'], or ['member', 'admin', 'captain']
+          captainOfTeamId: member.teamCaptains[0]?.teamId || null,  // Team ID if captain
+          teams: member.teamMembers.map(tm => ({ id: tm.teamId, isPrimary: tm.isPrimaryTeam })),
+        };
       }
     })
   ],
   callbacks: {
     async jwt({ token, user }) {
-      // Add role and team info to JWT
+      // Add roles and team info to JWT
+      if (user) {
+        token.roles = user.roles;
+        token.captainOfTeamId = user.captainOfTeamId;
+        token.teams = user.teams;
+      }
+      return token;
     },
     async session({ session, token }) {
-      // Add role and team info to session
+      // Add roles and team info to session
+      session.user.roles = token.roles;
+      session.user.captainOfTeamId = token.captainOfTeamId;
+      session.user.teams = token.teams;
+      return session;
     }
   }
 };
@@ -472,7 +508,7 @@ model Member {
   firstName     String    @map("first_name")
   lastName      String    @map("last_name")
   phone         String?
-  passwordHash  String?   @map("password_hash")
+  passwordHash  String    @map("password_hash") // Required for all members: shared password for regular members, individual for admins/captains
   isAdmin       Boolean   @default(false) @map("is_admin")
   isActive      Boolean   @default(true) @map("is_active")
   createdAt     DateTime  @default(now()) @map("created_at")
@@ -523,6 +559,108 @@ model TeamMember {
   @@map("team_members")
 }
 
+model TeamCaptain {
+  id        Int       @id @default(autoincrement())
+  teamId    Int       @map("team_id")
+  memberId  Int       @unique @map("member_id")  // One team per captain enforced
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  team      Team      @relation(fields: [teamId], references: [id])
+  member    Member    @relation(fields: [memberId], references: [id])
+
+  @@map("team_captains")
+}
+
+model Course {
+  id              Int       @id @default(autoincrement())
+  name            String
+  address         String?
+  description     String?
+  googleMapsUrl   String?   @map("google_maps_url")
+  photoUrl1       String?   @map("photo_url_1")  // Max 3 photos stored inline
+  photoUrl2       String?   @map("photo_url_2")
+  photoUrl3       String?   @map("photo_url_3")
+  teeTimeInterval Int       @default(8) @map("tee_time_interval")  // Minutes between tee times
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  events          Event[]
+
+  @@map("courses")
+}
+
+model Event {
+  id          Int       @id @default(autoincrement())
+  name        String
+  eventDate   DateTime  @map("event_date")
+  courseId    Int       @map("course_id")
+  status      String    @default("upcoming")  // upcoming, completed, cancelled
+  description String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  course              Course              @relation(fields: [courseId], references: [id])
+  eventRegistrations  EventRegistration[]
+  teeTimeRequests     TeeTimeRequest[]
+  scores              Score[]
+  guestScores         GuestScore[]
+
+  @@map("events")
+}
+
+model EventRegistration {
+  id           Int       @id @default(autoincrement())
+  eventId      Int       @map("event_id")
+  teamId       Int       @map("team_id")
+  registeredAt DateTime  @default(now()) @map("registered_at")
+
+  event        Event     @relation(fields: [eventId], references: [id])
+  team         Team      @relation(fields: [teamId], references: [id])
+
+  @@unique([eventId, teamId])  // Team can only register once per event
+  @@map("event_registrations")
+}
+
+model TeeTimeRequest {
+  id              Int       @id @default(autoincrement())
+  eventId         Int       @map("event_id")
+  teamId          Int       @map("team_id")
+  requestNotes    String?   @map("request_notes")  // Free-form text for preferred times
+  assignedTime    DateTime? @map("assigned_time")
+  status          String    @default("pending")  // pending, assigned
+  requestedBy     Int       @map("requested_by")
+  assignedBy      Int?      @map("assigned_by")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  event           Event     @relation(fields: [eventId], references: [id])
+  team            Team      @relation(fields: [teamId], references: [id])
+  requestedByMember Member  @relation("RequestedBy", fields: [requestedBy], references: [id])
+  assignedByMember Member?  @relation("AssignedBy", fields: [assignedBy], references: [id])
+
+  @@unique([eventId, teamId])  // One request per team per event
+  @@map("tee_time_requests")
+}
+
+model Score {
+  id          Int       @id @default(autoincrement())
+  eventId     Int       @map("event_id")
+  memberId    Int       @map("member_id")
+  teamId      Int       @map("team_id")
+  totalScore  Int       @map("total_score")
+  enteredBy   Int       @map("entered_by")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  event       Event     @relation(fields: [eventId], references: [id])
+  member      Member    @relation(fields: [memberId], references: [id])
+  team        Team      @relation(fields: [teamId], references: [id])
+  enteredByMember Member @relation("EnteredBy", fields: [enteredBy], references: [id])
+
+  @@unique([eventId, memberId])  // One score per member per event
+  @@map("scores")
+}
+
 model GuestScore {
   id          Int       @id @default(autoincrement())
   eventId     Int       @map("event_id")
@@ -541,7 +679,20 @@ model GuestScore {
   @@map("guest_scores")
 }
 
-// ... additional models for all 13 tables
+model AuditLog {
+  id          Int       @id @default(autoincrement())
+  memberId    Int?      @map("member_id")
+  action      String    // login, logout, lockout, create, update, delete
+  entityType  String    @map("entity_type")  // member, team, event, score, course, etc.
+  entityId    Int?      @map("entity_id")
+  details     String?   // JSON string with old/new values
+  ipAddress   String?   @map("ip_address")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  member      Member?   @relation(fields: [memberId], references: [id])
+
+  @@map("audit_logs")
+}
 ```
 
 ### API Routes Structure
@@ -565,9 +716,7 @@ app/
 │   ├── courses/
 │   │   ├── route.ts
 │   │   └── [id]/
-│   │       ├── route.ts
-│   │       └── photos/
-│   │           └── route.ts
+│   │       └── route.ts      # Photo URLs managed directly via PUT
 │   ├── events/
 │   │   ├── route.ts
 │   │   └── [id]/
@@ -578,11 +727,33 @@ app/
 │   │           └── route.ts
 │   ├── scores/
 │   │   └── route.ts
-│   ├── settings/
-│   │   └── route.ts
+│   ├── shared-password/
+│   │   └── route.ts          # PUT (update shared password for all regular members)
 │   └── audit-logs/
 │       └── route.ts
 ```
+
+### API Authorization Matrix
+
+| Route | GET | POST | PUT | DELETE | Required Role |
+|-------|-----|------|-----|--------|---------------|
+| /api/auth/[...nextauth] | All | All | - | - | Public |
+| /api/members | Admin | Admin | - | - | Admin |
+| /api/members/[id] | Admin | - | Admin | Admin | Admin |
+| /api/teams | Auth | Admin | - | - | Authenticated |
+| /api/teams/[id] | Auth | - | Admin/Captain* | Admin | Authenticated |
+| /api/teams/[id]/members | Admin/Captain* | Admin/Captain* | - | Admin/Captain* | Admin or Team Captain |
+| /api/courses | Auth | Admin | - | - | Authenticated |
+| /api/courses/[id] | Auth | - | Admin | Admin | Authenticated |
+| /api/events | Auth | Admin | - | - | Authenticated |
+| /api/events/[id] | Auth | - | Admin | Admin | Authenticated |
+| /api/events/[id]/register | Auth | Captain* | - | Admin | Captain for team |
+| /api/events/[id]/tee-times | Auth | Captain* | Admin | - | Varies |
+| /api/scores | Admin/Captain* | Admin/Captain* | Admin/Captain* | Admin | Admin or Captain |
+| /api/shared-password | - | - | Admin | - | Admin |
+| /api/audit-logs | Admin | - | - | - | Admin |
+
+*Captain = Only for their own team
 
 ### Directory Structure
 
@@ -617,7 +788,7 @@ nextjs-golf-portal/
 │   │   │   │   └── page.tsx
 │   │   │   ├── scores/
 │   │   │   │   └── page.tsx
-│   │   │   ├── settings/
+│   │   │   ├── shared-password/
 │   │   │   │   └── page.tsx
 │   │   │   └── audit-logs/
 │   │   │       └── page.tsx

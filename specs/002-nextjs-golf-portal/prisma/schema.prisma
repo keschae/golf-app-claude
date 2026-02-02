@@ -1,0 +1,210 @@
+// Prisma Schema for MCSGA Golf Portal
+// This is the complete schema for both PostgreSQL and SQLite
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// For PostgreSQL (production):
+// datasource db {
+//   provider = "postgresql"
+//   url      = env("DATABASE_URL")
+// }
+
+// For SQLite (development):
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model Member {
+  id            Int       @id @default(autoincrement())
+  email         String    @unique
+  firstName     String    @map("first_name")
+  lastName      String    @map("last_name")
+  phone         String?
+  passwordHash  String    @map("password_hash") // Required for all members: shared password for regular members, individual for admins/captains
+  isAdmin       Boolean   @default(false) @map("is_admin")
+  isActive      Boolean   @default(true) @map("is_active")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  // Primary team is determined via TeamMember.isPrimaryTeam flag
+  teamMembers            TeamMember[]
+  teamCaptains           TeamCaptain[]
+  scores                 Score[]
+  auditLogs              AuditLog[]
+  teeTimeRequests        TeeTimeRequest[] @relation("RequestedBy")
+  teeTimeAssignments     TeeTimeRequest[] @relation("AssignedBy")
+  scoresEntered          Score[]          @relation("EnteredBy")
+  guestScoresEntered     GuestScore[]     @relation("GuestScoresEntered")
+
+  @@map("members")
+}
+
+model Team {
+  id          Int       @id @default(autoincrement())
+  teamName    String    @map("team_name")
+  description String?
+  isActive    Boolean   @default(true) @map("is_active")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  teamMembers        TeamMember[]
+  teamCaptains       TeamCaptain[]
+  eventRegistrations EventRegistration[]
+  teeTimeRequests    TeeTimeRequest[]
+  scores             Score[]
+  guestScores        GuestScore[]
+
+  @@map("teams")
+}
+
+model TeamMember {
+  id            Int       @id @default(autoincrement())
+  teamId        Int       @map("team_id")
+  memberId      Int       @map("member_id")
+  isPrimaryTeam Boolean   @default(false) @map("is_primary_team")
+  joinedAt      DateTime  @default(now()) @map("joined_at")
+
+  team          Team      @relation(fields: [teamId], references: [id])
+  member        Member    @relation(fields: [memberId], references: [id])
+
+  @@unique([teamId, memberId])
+  @@map("team_members")
+}
+
+model TeamCaptain {
+  id        Int       @id @default(autoincrement())
+  teamId    Int       @map("team_id")
+  memberId  Int       @unique @map("member_id")  // One team per captain enforced
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  team      Team      @relation(fields: [teamId], references: [id])
+  member    Member    @relation(fields: [memberId], references: [id])
+
+  @@map("team_captains")
+}
+
+model Course {
+  id              Int       @id @default(autoincrement())
+  name            String
+  address         String?
+  description     String?
+  googleMapsUrl   String?   @map("google_maps_url")
+  photoUrl1       String?   @map("photo_url_1")  // Max 3 photos stored inline
+  photoUrl2       String?   @map("photo_url_2")
+  photoUrl3       String?   @map("photo_url_3")
+  teeTimeInterval Int       @default(8) @map("tee_time_interval")  // Minutes between tee times
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  events          Event[]
+
+  @@map("courses")
+}
+
+model Event {
+  id          Int       @id @default(autoincrement())
+  name        String
+  eventDate   DateTime  @map("event_date")
+  courseId    Int       @map("course_id")
+  status      String    @default("upcoming")  // upcoming, completed, cancelled
+  description String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  course              Course              @relation(fields: [courseId], references: [id])
+  eventRegistrations  EventRegistration[]
+  teeTimeRequests     TeeTimeRequest[]
+  scores              Score[]
+  guestScores         GuestScore[]
+
+  @@map("events")
+}
+
+model EventRegistration {
+  id           Int       @id @default(autoincrement())
+  eventId      Int       @map("event_id")
+  teamId       Int       @map("team_id")
+  registeredAt DateTime  @default(now()) @map("registered_at")
+
+  event        Event     @relation(fields: [eventId], references: [id])
+  team         Team      @relation(fields: [teamId], references: [id])
+
+  @@unique([eventId, teamId])  // Team can only register once per event
+  @@map("event_registrations")
+}
+
+model TeeTimeRequest {
+  id              Int       @id @default(autoincrement())
+  eventId         Int       @map("event_id")
+  teamId          Int       @map("team_id")
+  requestNotes    String?   @map("request_notes")  // Free-form text for preferred times
+  assignedTime    DateTime? @map("assigned_time")
+  status          String    @default("pending")  // pending, assigned
+  requestedBy     Int       @map("requested_by")
+  assignedBy      Int?      @map("assigned_by")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  event             Event   @relation(fields: [eventId], references: [id])
+  team              Team    @relation(fields: [teamId], references: [id])
+  requestedByMember Member  @relation("RequestedBy", fields: [requestedBy], references: [id])
+  assignedByMember  Member? @relation("AssignedBy", fields: [assignedBy], references: [id])
+
+  @@unique([eventId, teamId])  // One request per team per event
+  @@map("tee_time_requests")
+}
+
+model Score {
+  id          Int       @id @default(autoincrement())
+  eventId     Int       @map("event_id")
+  memberId    Int       @map("member_id")
+  teamId      Int       @map("team_id")
+  totalScore  Int       @map("total_score")
+  enteredBy   Int       @map("entered_by")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  event           Event   @relation(fields: [eventId], references: [id])
+  member          Member  @relation(fields: [memberId], references: [id])
+  team            Team    @relation(fields: [teamId], references: [id])
+  enteredByMember Member  @relation("EnteredBy", fields: [enteredBy], references: [id])
+
+  @@unique([eventId, memberId])  // One score per member per event
+  @@map("scores")
+}
+
+model GuestScore {
+  id          Int       @id @default(autoincrement())
+  eventId     Int       @map("event_id")
+  teamId      Int       @map("team_id")
+  firstName   String    @map("first_name")
+  lastName    String    @map("last_name")
+  totalScore  Int       @map("total_score")
+  enteredBy   Int       @map("entered_by")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  event           Event   @relation(fields: [eventId], references: [id])
+  team            Team    @relation(fields: [teamId], references: [id])
+  enteredByMember Member  @relation("GuestScoresEntered", fields: [enteredBy], references: [id])
+
+  @@map("guest_scores")
+}
+
+model AuditLog {
+  id          Int       @id @default(autoincrement())
+  memberId    Int?      @map("member_id")
+  action      String    // login, logout, lockout, create, update, delete
+  entityType  String    @map("entity_type")  // member, team, event, score, course, etc.
+  entityId    Int?      @map("entity_id")
+  details     String?   // JSON string with old/new values
+  ipAddress   String?   @map("ip_address")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  member      Member?   @relation(fields: [memberId], references: [id])
+
+  @@map("audit_logs")
+}

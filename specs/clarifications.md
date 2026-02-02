@@ -1,255 +1,260 @@
-# MCSGA Golf Portal - Specification Clarifications
+# Specification Clarifications
 
-**Created**: 2026-01-18  
-**Status**: Resolved  
-**Related Documents**: [`specs.md`](../specs.md), [`001-laravel-golf-portal/spec.md`](001-laravel-golf-portal/spec.md), [`002-nextjs-golf-portal/spec.md`](002-nextjs-golf-portal/spec.md)
+## Password Management for Regular Members
 
-This document captures clarifications made during the specification review process. All items have been resolved and should be incorporated into the main specifications.
+**Date**: 2026-02-02  
+**Context**: Next.js Golf Portal (002-nextjs-golf-portal)
 
----
+### Clarification
 
-## Resolved Clarifications
+Regular members will not have the ability to create a unique individual password. The authentication system works as follows:
 
-### 1. Authentication Flow ✅
+1. **Shared Password Storage**: The shared password is stored directly in each member's `passwordHash` field in the `members` table, not in a separate `system_settings` table.
 
-**Issue**: The login flow diagram showed user selecting their type first, but this creates UX friction.
+2. **Password Update Mechanism**: When an administrator changes the shared member password, the system updates the `passwordHash` field for all users with regular member status (i.e., non-admin, non-captain).
 
-**Resolution**: **Auto-detect authentication method**
-- User enters email + password on a single login form
-- System checks if user exists and has an individual password → validates against it
-- If user exists but has no individual password → validates against shared member password
-- Single unified login experience for all users
+3. **No Password Reset Process**: There is no need for a password reset process for regular members. The loose password policy serves as a deterrent to prevent unauthorized access to personal information and golf scores.
 
-**Implementation Note**: The login form should NOT ask users to identify their role. The system determines permissions after successful authentication.
+4. **Breach Response**: If there is a password breach, an administrator simply resets the shared password for all regular members.
 
----
+5. **Rationale**: This policy reduces administrative overhead by eliminating support requests concerning email addresses and passwords.
 
-### 2. Captain Role Elevation & Password ✅
+### Impact on Schema
 
-**Issue**: Unclear workflow when a member becomes a team captain.
+- The `passwordHash` field is now required (not optional) on the `Member` model
+- No `system_settings` table is needed for storing the shared password
+- The `/api/shared-password/` route handles updating passwords for all regular members
 
-**Resolution**: **Gradual password requirement with notification**
-1. Only administrators can elevate a regular member to captain role
-2. Upon elevation, the member does NOT immediately need a password
-3. On next login, the newly-elevated captain sees a **persistent notification banner** at the top of the screen
-4. Their profile page displays a **constant reminder** to set an individual password
-5. Until they set a password, they can still log in with the shared password
-6. **Captain features are restricted** until they set their individual password
+### Impact on Authentication
 
-**UI Requirements**:
-- Banner: "You've been made a Team Captain! Please set your individual password to access captain features."
-- Profile page: "Set Password" button prominently displayed
-- Captain menu items visible but disabled with tooltip: "Set your password to unlock"
+The NextAuth.js `authorize` function validates credentials against the member's `passwordHash` field regardless of their role. The difference is only in how the password is set:
+- Regular members: `passwordHash` is set by admin via shared password update
+- Admins/Captains: `passwordHash` is set individually by the user or admin
 
 ---
 
-### 3. Primary Team Data Model ✅
+## Team Captain Rules
 
-**Issue**: Redundancy between `MEMBERS.primary_team_id` and `TEAM_MEMBERS.is_primary_team`.
+**Date**: 2026-02-02
+**Context**: Next.js Golf Portal (002-nextjs-golf-portal)
 
-**Resolution**: **Consolidate to `TEAM_MEMBERS.is_primary_team` only**
-- Remove `MEMBERS.primary_team_id` column from the schema
-- Use `TEAM_MEMBERS.is_primary_team` boolean to designate primary team
-- Enforce constraint: Only ONE `TEAM_MEMBERS` record per member can have `is_primary_team = true`
-- When a member is added to their first team, automatically set `is_primary_team = true`
+### Clarification
 
-**Database Change Required**: Remove `primary_team_id` FK from MEMBERS table.
+The team captain system has the following rules:
 
----
+1. **One Team Per Captain**: An individual member can only be captain of one team at a time.
 
-### 4. Score Entry Scope ✅
+2. **Multiple Captains Per Team**: A single team can have more than one member elevated to team captain status.
 
-**Issue**: Can captains enter scores for anyone who played with their team, or only permanent members?
+3. **Captain Elevation**: Administrators have the authority to:
+   - Elevate a regular member to team captain status
+   - Demote a team captain back to regular member status
 
-**Resolution**: **Support both permanent team members AND guest players**
-- Team captains can enter scores for all permanent team members (from TEAM_MEMBERS table)
-- Team captains can also add "guest players" for an event
-- Guest players are temporary participants who are not permanent team members
-- Guest player scores are recorded with the team for that specific event only
+### Impact on Schema
 
-**Implementation**:
-- Add a GUEST_SCORES table to track guest player scores per event
-- Score entry form shows permanent team members plus an "Add Guest" option
-- Guest players require: first name, last name, and score
-- Guest players do NOT require email or full member registration
+The `TeamCaptain` model enforces the one-team-per-captain constraint via a unique index on `memberId`:
 
----
-
-### 5. Event Registration Workflow ✅
-
-**Issue**: Registration process and deadlines not specified.
-
-**Resolution**: **Registration deadline per event**
-- Events have a `registration_deadline` date field
-- Teams can only register before the deadline
-- After deadline, registration is closed (admin can still manually register if needed)
-- Teams can unregister before the deadline
-
-**Database Change Required**: Add `registration_deadline DATE` column to EVENTS table.
-
----
-
-### 6. Tee Time Request Constraints ✅
-
-**Issue**: No validation rules specified for tee time requests.
-
-**Resolution**: **Event-based tee time configuration with system defaults**
-
-**System Settings (SYSTEM_SETTINGS table)**:
-- `default_tee_time_increment`: Default gap between team tee times in minutes (default: **8 minutes**)
-- `default_tee_time_slots`: Maximum number of tee time slots per event (default: **100**)
-
-**Event Configuration (EVENTS table)**:
-- `tee_time_start`: Starting time for the first tee time of the event (TIME, required for tee time assignment)
-- Subsequent tee times are calculated by adding the increment to the previous slot
-
-**Tee Time Assignment Logic**:
-1. First team gets `tee_time_start` (e.g., 8:00 AM)
-2. Second team gets `tee_time_start + increment` (e.g., 8:08 AM with 8-minute increment)
-3. Continue until all teams are assigned or max slots reached
-4. Multiple teams can request same preferred time (admin resolves conflicts)
-5. Teams without tee time requests: Admin can assign or leave unassigned
-
-**Database Changes Required**:
-- Add to EVENTS: `tee_time_start TIME NULL`
-- Add to SYSTEM_SETTINGS: `default_tee_time_increment` = '8'
-- Add to SYSTEM_SETTINGS: `default_tee_time_slots` = '100'
-
----
-
-### 7. Score Validation Range ✅
-
-**Issue**: "Reasonable score range" not defined.
-
-**Resolution**: **40-250 inclusive**
-- Minimum: 40 (covers exceptional rounds)
-- Maximum: 250 (covers beginners and high-handicap players)
-- Validation error if score outside this range
-- Admin can override if needed (with audit log entry)
-
----
-
-### 8. Deletion Behavior ✅
-
-**Issue**: Soft delete vs hard delete not specified.
-
-**Resolution**: **Context-dependent deletion rules**
-
-| Entity | Deletion Rule |
-|--------|---------------|
-| **Members** | Soft delete - mark as `is_active = false`, preserve all history (scores, team memberships, audit logs) |
-| **Teams** | Soft delete - mark as `is_active = false`, preserve history |
-| **Events** | Hard delete ONLY if no registrations or tee times exist; otherwise prevent deletion |
-| **Courses** | Hard delete ONLY if no events reference it; otherwise prevent deletion |
-| **Scores** | Hard delete allowed (with audit log) |
-| **Tee Time Requests** | Hard delete allowed (with audit log) |
-
-**Database Change Required**: Add `is_active BOOLEAN DEFAULT TRUE` to MEMBERS and TEAMS tables.
-
----
-
-### 9. Session Timeout ✅
-
-**Issue**: "Appropriate timeout" not specified.
-
-**Resolution**: **30 minutes of inactivity**
-- Session expires after 30 minutes of no activity
-- User is redirected to login page with message: "Your session has expired. Please log in again."
-- No "Remember Me" option for Phase 1 (can be added in Phase 2)
-
----
-
-### 10. Photo Storage ✅
-
-**Issue**: No limits specified for course photos and unclear if upload or URL entry.
-
-**Resolution**: **URL-based photo references with maximum 3 photos per course**
-- Photos are specified via URL entry (not file upload)
-- URLs can point to:
-  - Local paths on the hosting server (e.g., `/images/courses/pine-valley-1.jpg`)
-  - External websites (e.g., `https://example.com/golf-course.jpg`)
-- Maximum 3 photos per course
-- Allowed formats: JPG, PNG, WebP (validated by file extension in URL)
-- No file size limit enforced (external URLs are not validated for size)
-
-**Implementation Note**: Administrators enter URLs directly in the course form. The system does NOT handle file uploads for photos in Phase 1.
-
----
-
-### 11. Report Sorting ✅
-
-**Issue**: Default sort order for Event Scoring Report not specified.
-
-**Resolution**: **Sort by team name alphabetically (A-Z) as default**
-- Event Scoring Report default sort: Team name (A-Z), then member name (A-Z) within team
-- Optional sort toggles available: by score (ascending), by member name
-- Teams and Members Report: Sort by team name (A-Z)
-
----
-
-## Schema Updates Required
-
-Based on these clarifications, the following schema changes are needed:
-
-### MEMBERS Table
-```sql
--- Remove: primary_team_id column
--- Add: is_active BOOLEAN DEFAULT TRUE
-```
-
-### TEAMS Table
-```sql
--- Add: is_active BOOLEAN DEFAULT TRUE
-```
-
-### EVENTS Table
-```sql
--- Add: registration_deadline DATE NULL
--- Add: tee_time_start TIME NULL (starting time for first tee time)
-```
-
-### TEAM_MEMBERS Table
-```sql
--- Add constraint: Only one is_primary_team = true per member_id
-```
-
-### GUEST_SCORES Table (NEW)
-```sql
-CREATE TABLE GUEST_SCORES (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    event_id INT NOT NULL REFERENCES EVENTS(id),
-    team_id INT NOT NULL REFERENCES TEAMS(id),
-    first_name VARCHAR(100) NOT NULL,
-    last_name VARCHAR(100) NOT NULL,
-    total_score INT NOT NULL,
-    entered_by INT NOT NULL REFERENCES MEMBERS(id),
-    created_at DATETIME NOT NULL,
-    updated_at DATETIME NOT NULL
-);
-```
-
-### SYSTEM_SETTINGS Table (Additional Entries)
-```sql
--- Add setting: default_tee_time_increment = '8' (minutes)
--- Add setting: default_tee_time_slots = '100'
+```prisma
+model TeamCaptain {
+  id        Int      @id @default(autoincrement())
+  teamId    Int      @map("team_id")
+  memberId  Int      @unique @map("member_id")  // Ensures one team per captain
+  
+  team      Team     @relation(fields: [teamId], references: [id])
+  member    Member   @relation(fields: [memberId], references: [id])
+  
+  @@map("team_captains")
+}
 ```
 
 ---
 
-## Open Items
+## Course Photo Limit
 
-| Item | Status | Owner | Notes |
-|------|--------|-------|-------|
-| ~~Score entry scope~~ | ✅ Resolved | - | Guest players supported |
-| ~~Tee time constraints~~ | ✅ Resolved | - | Event start time + system default increment |
+**Date**: 2026-02-02
+**Context**: Next.js Golf Portal (002-nextjs-golf-portal)
 
-**All open items have been resolved.**
+### Clarification
+
+Course photos are limited to a maximum of 3 per golf course:
+
+1. **No Separate Table**: Photo URLs are stored directly in the `Course` model as three optional fields (`photoUrl1`, `photoUrl2`, `photoUrl3`), eliminating the need for a many-to-many relationship.
+
+2. **Simplified Schema**: This reduces database complexity and query overhead.
+
+### Impact on Schema
+
+```prisma
+model Course {
+  id          Int       @id @default(autoincrement())
+  name        String
+  address     String?
+  description String?
+  googleMapsUrl String? @map("google_maps_url")
+  photoUrl1   String?   @map("photo_url_1")
+  photoUrl2   String?   @map("photo_url_2")
+  photoUrl3   String?   @map("photo_url_3")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  events      Event[]
+
+  @@map("courses")
+}
+```
+
+### Impact on API
+
+- The `/api/courses/[id]/photos/` route is no longer needed
+- Photo URLs are managed directly through the `/api/courses/[id]/` PUT endpoint
 
 ---
 
-## Document History
+## Event Status Values
 
-| Date | Author | Changes |
-|------|--------|---------|
-| 2026-01-18 | Architecture Review | Initial clarifications document |
-| 2026-01-19 | Architecture Review | Resolved: Score entry scope (guest players), Tee time constraints (8-min default increment, event start time), Report sorting (team name A-Z), Photo storage (URL-based) |
+**Date**: 2026-02-02
+**Context**: Next.js Golf Portal (002-nextjs-golf-portal)
+
+### Clarification
+
+Events have three valid status values:
+- `upcoming` - Event is scheduled and visible on member dashboards
+- `completed` - Event has concluded; no longer shown on dashboard but scores remain editable
+- `cancelled` - Event was cancelled; hidden from dashboard and tee times invalidated
+
+---
+
+## Score Data Structure
+
+**Date**: 2026-02-02
+**Context**: Next.js Golf Portal (002-nextjs-golf-portal)
+
+### Clarification
+
+Scores are stored as a simple total score for the game (integer). There is no hole-by-hole score tracking.
+
+Scores can be edited by captains or administrators even after an event is marked as "completed".
+
+---
+
+## Tee Time Request Format
+
+**Date**: 2026-02-02
+**Context**: Next.js Golf Portal (002-nextjs-golf-portal)
+
+### Clarification
+
+1. **Free-form Request**: Captains enter their preferred tee time as free-form text (not a structured DateTime). They can request multiple preferences in a text field.
+
+2. **Admin Assignment**: The administrator reads the request notes and assigns an actual DateTime for the tee time.
+
+3. **Status Values**: Only two statuses are needed:
+   - `pending` - Request submitted, awaiting admin assignment
+   - `assigned` - Admin has assigned a tee time
+
+4. **No Rejection**: There is no "rejected" status. Every team will receive an assigned time.
+
+5. **No Modification**: Captains cannot modify requests after submission. They can submit multiple requests (text-based preferences) but the system tracks only the latest.
+
+---
+
+## Guest Scores
+
+**Date**: 2026-02-02
+**Context**: Next.js Golf Portal (002-nextjs-golf-portal)
+
+### Clarification
+
+Guest scores are used in two scenarios:
+
+1. **Association Member Playing with Different Team**: A member from the golf association who plays with a team other than their primary team for a specific event.
+
+2. **Non-Member Guest**: Someone who is not a member of the association at all but participates in an event.
+
+In both cases:
+- The captain enters the guest's first name, last name, and total score
+- Guest scores appear in event reports alongside regular member scores
+- Guests do not have login accounts
+
+---
+
+## Tee Time Interval Configuration
+
+**Date**: 2026-02-02
+**Context**: Next.js Golf Portal (002-nextjs-golf-portal)
+
+### Clarification
+
+The tee time interval (time between consecutive tee times) is configured per course, not as a system-wide setting. Each course record has a `teeTimeInterval` field (default 8 minutes).
+
+When an admin assigns tee times for an event, they should follow the interval defined by the course associated with that event.
+
+---
+
+## Admin and Captain Dual Role
+
+**Date**: 2026-02-02
+**Context**: Next.js Golf Portal (002-nextjs-golf-portal)
+
+### Clarification
+
+A member CAN be both an administrator AND a team captain simultaneously. The roles are not mutually exclusive.
+
+The authentication code should return both roles when applicable:
+- If `isAdmin` is true, the user has admin privileges
+- If the user has a TeamCaptain record, they have captain privileges for that team
+- A user can have both
+
+---
+
+## Event Registration Removal
+
+**Date**: 2026-02-02
+**Context**: Next.js Golf Portal (002-nextjs-golf-portal)
+
+### Clarification
+
+Administrators can remove a team's registration from an event. Captains cannot unregister their own team. When a registration is removed:
+- Any associated tee time request is also deleted
+- The team's scores for that event (if any) remain but are orphaned
+
+---
+
+## Team Size Constraints
+
+**Date**: 2026-02-02
+**Context**: Next.js Golf Portal (002-nextjs-golf-portal)
+
+### Clarification
+
+- **Minimum team size**: 2 members (golfers)
+- **Maximum team size**: No explicit limit
+
+---
+
+## Audit Log Actions
+
+**Date**: 2026-02-02
+**Context**: Next.js Golf Portal (002-nextjs-golf-portal)
+
+### Clarification
+
+The audit log should capture the following actions:
+
+1. **Authentication Events**:
+   - `login` - Successful login
+   - `logout` - User logout
+   - `lockout` - Failed login attempts (if implemented)
+
+2. **Data Modification Events** (for core tables: Member, Team, Event, Score, Course):
+   - `create` - New record created
+   - `update` - Record modified
+   - `delete` - Record removed
+
+Each log entry includes:
+- Member who performed the action (if authenticated)
+- Action type
+- Entity type and ID
+- Details (JSON with relevant changes)
+- IP address (if available)
+- Timestamp
